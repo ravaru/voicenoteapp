@@ -54,6 +54,9 @@ fn main() {
             commands::get_whisper_installed,
             commands::start_whisper_download,
             commands::get_latest_whisper_release_url,
+            commands::get_ffmpeg_download_status,
+            commands::get_ffmpeg_installed,
+            commands::start_ffmpeg_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -106,6 +106,18 @@ export async function getWhisperInstalled(): Promise<boolean> {
   return invokeCommand<boolean>("get_whisper_installed");
 }
 
+export async function getFfmpegDownloadStatus(): Promise<ModelDownloadStatus> {
+  return invokeCommand<ModelDownloadStatus>("get_ffmpeg_download_status");
+}
+
+export async function getFfmpegInstalled(): Promise<boolean> {
+  return invokeCommand<boolean>("get_ffmpeg_installed");
+}
+
+export async function startFfmpegDownload(url: string): Promise<ModelDownloadStatus> {
+  return invokeCommand<ModelDownloadStatus>("start_ffmpeg_download", { url });
+}
+
 export async function getClipUrl(id: string, start: number, end: number): Promise<string> {
   const path = await invokeCommand<string>("get_clip_path", { id, start, end });
   if (!path) {

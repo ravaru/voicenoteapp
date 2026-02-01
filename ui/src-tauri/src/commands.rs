@@ -37,6 +37,7 @@ pub struct AppConfig {
     pub watch_inbox_enabled: bool,
     pub inbox_poll_seconds: u32,
     pub whisper_binary_url: Option<String>,
+    pub ffmpeg_binary_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +97,7 @@ struct JobLogEvent {
 pub struct ModelDownloadState {
     models_dir: PathBuf,
     whisper_dir: PathBuf,
+    ffmpeg_dir: PathBuf,
     statuses: Arc<Mutex<HashMap<String, ModelDownloadStatus>>>,
 }
 
@@ -114,9 +116,13 @@ impl ModelDownloadState {
         let whisper_dir = app_dir.join("whisper");
         fs::create_dir_all(&whisper_dir)
             .map_err(|err| format!("failed to create whisper dir: {err}"))?;
+        let ffmpeg_dir = app_dir.join("ffmpeg");
+        fs::create_dir_all(&ffmpeg_dir)
+            .map_err(|err| format!("failed to create ffmpeg dir: {err}"))?;
         Ok(Self {
             models_dir,
             whisper_dir,
+            ffmpeg_dir,
             statuses: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -165,6 +171,9 @@ impl Default for AppConfig {
             whisper_binary_url: Some(
                 "https://github.com/bizenlabs/whisper-cpp-macos-bin/releases/latest"
                     .to_string(),
+            ),
+            ffmpeg_binary_url: Some(
+                "https://github.com/ravaru/voicenoteapp/releases/latest/download/ffmpeg-macos-arm64-lgpl.zip".to_string(),
             ),
         }
     }
@@ -580,6 +589,10 @@ fn whisper_binary_status_key() -> String {
     "whisper-binary".to_string()
 }
 
+fn ffmpeg_status_key() -> String {
+    "ffmpeg".to_string()
+}
+
 fn github_repo_from_api(url: &str) -> Option<String> {
     let marker = "api.github.com/repos/";
     let idx = url.find(marker)?;
@@ -828,6 +841,48 @@ fn extract_whisper_zip(zip_path: &PathBuf, dest_path: &PathBuf) -> Result<(), St
     Err("Whisper binary not found in zip.".to_string())
 }
 
+fn extract_ffmpeg_zip(zip_path: &PathBuf, dest_dir: &PathBuf) -> Result<(), String> {
+    let file = File::open(zip_path)
+        .map_err(|err| format!("Failed to open zip: {err}"))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|err| format!("Invalid zip: {err}"))?;
+    let mut found_ffmpeg = false;
+    let mut found_ffprobe = false;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|err| format!("Zip entry error: {err}"))?;
+        let name = entry.name().to_string();
+        if name.ends_with("/ffmpeg") || name == "ffmpeg" {
+            let out_path = dest_dir.join("bin/ffmpeg");
+            fs::create_dir_all(out_path.parent().unwrap())
+                .map_err(|err| format!("Failed to create ffmpeg dir: {err}"))?;
+            let mut out = File::create(&out_path)
+                .map_err(|err| format!("Failed to create ffmpeg binary: {err}"))?;
+            std::io::copy(&mut entry, &mut out)
+                .map_err(|err| format!("Failed to extract ffmpeg: {err}"))?;
+            found_ffmpeg = true;
+        }
+        if name.ends_with("/ffprobe") || name == "ffprobe" {
+            let out_path = dest_dir.join("bin/ffprobe");
+            fs::create_dir_all(out_path.parent().unwrap())
+                .map_err(|err| format!("Failed to create ffprobe dir: {err}"))?;
+            let mut out = File::create(&out_path)
+                .map_err(|err| format!("Failed to create ffprobe binary: {err}"))?;
+            std::io::copy(&mut entry, &mut out)
+                .map_err(|err| format!("Failed to extract ffprobe: {err}"))?;
+            found_ffprobe = true;
+        }
+    }
+    if !found_ffmpeg {
+        return Err("ffmpeg binary not found in zip.".to_string());
+    }
+    if !found_ffprobe {
+        return Err("ffprobe binary not found in zip.".to_string());
+    }
+    Ok(())
+}
+
 fn convert_to_wav(ffmpeg_path: &PathBuf, input: &str, output: &PathBuf) -> Result<(), String> {
     let status = Command::new(ffmpeg_path)
         .args([
@@ -988,10 +1043,17 @@ fn resolve_ffmpeg_path(app: &AppHandle) -> Result<PathBuf, String> {
     }
     if let Ok(resource_dir) = app.path().resource_dir() {
         candidates.push(resource_dir.join("ffmpeg/bin/ffmpeg"));
+        candidates.push(resource_dir.join("resources/ffmpeg/bin/ffmpeg"));
+        candidates.push(resource_dir.join("third_party/ffmpeg/bin/ffmpeg"));
+    }
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        candidates.push(app_data_dir.join("voicenote/ffmpeg/bin/ffmpeg"));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("../Resources/ffmpeg/bin/ffmpeg"));
+            candidates.push(dir.join("../Resources/resources/ffmpeg/bin/ffmpeg"));
+            candidates.push(dir.join("../Resources/third_party/ffmpeg/bin/ffmpeg"));
         }
     }
 
@@ -1951,6 +2013,159 @@ pub fn get_whisper_installed(state: State<ModelDownloadState>) -> bool {
 }
 
 #[tauri::command]
+pub fn get_ffmpeg_download_status(state: State<ModelDownloadState>) -> ModelDownloadStatus {
+    let key = ffmpeg_status_key();
+    let guard = state.statuses.lock().ok();
+    if let Some(guard) = guard {
+        if let Some(status) = guard.get(&key) {
+            return status.clone();
+        }
+    }
+    ModelDownloadStatus {
+        state: "idle".to_string(),
+        model_size: key,
+        repo_id: "ffmpeg".to_string(),
+        total_bytes: 0,
+        downloaded_bytes: 0,
+        message: None,
+        started_at: None,
+        finished_at: None,
+    }
+}
+
+#[tauri::command]
+pub fn get_ffmpeg_installed(state: State<ModelDownloadState>) -> bool {
+    let bin = state.ffmpeg_dir.join("bin/ffmpeg");
+    let probe = state.ffmpeg_dir.join("bin/ffprobe");
+    if bin.exists() && probe.exists() {
+        return true;
+    }
+    let third_party = PathBuf::from("third_party/ffmpeg/bin/ffmpeg");
+    if third_party.exists() {
+        return true;
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.join("third_party/ffmpeg/bin/ffmpeg").exists() {
+            return true;
+        }
+    }
+    false
+}
+
+#[tauri::command]
+pub fn start_ffmpeg_download(
+    app: AppHandle,
+    state: State<ModelDownloadState>,
+    url: String,
+) -> Result<ModelDownloadStatus, String> {
+    if url.trim().is_empty() {
+        return Err("FFmpeg download URL is empty.".to_string());
+    }
+    let url = url.replace("http://", "https://");
+    let key = ffmpeg_status_key();
+    let bin_dir = state.ffmpeg_dir.join("bin");
+    fs::create_dir_all(&bin_dir)
+        .map_err(|err| format!("failed to create ffmpeg bin dir: {err}"))?;
+    let tmp_path = state.ffmpeg_dir.join("ffmpeg.part");
+    let _ = fs::remove_file(&tmp_path);
+
+    let mut guard = state
+        .statuses
+        .lock()
+        .map_err(|_| "model download mutex poisoned".to_string())?;
+    if let Some(existing) = guard.get(&key) {
+        if existing.state == "downloading" {
+            return Ok(existing.clone());
+        }
+    }
+    let status = ModelDownloadStatus {
+        state: "downloading".to_string(),
+        model_size: key.clone(),
+        repo_id: "ffmpeg".to_string(),
+        total_bytes: 0,
+        downloaded_bytes: 0,
+        message: Some("Downloading FFmpeg".to_string()),
+        started_at: Some(now_ts()),
+        finished_at: None,
+    };
+    guard.insert(key.clone(), status.clone());
+    drop(guard);
+
+    let status_map = Arc::clone(&state.inner().statuses);
+    let app_handle = app.clone();
+    let status_for_thread = status.clone();
+    let ffmpeg_dir = state.ffmpeg_dir.clone();
+    let key_for_thread = key.clone();
+    thread::spawn(move || {
+        let mut result_status = status_for_thread.clone();
+        let download_result = download_to_file(&url, &tmp_path, &mut result_status, &status_map);
+        if let Err(err) = download_result {
+            result_status.state = "error".to_string();
+            result_status.message = Some(err);
+            let _ = fs::remove_file(&tmp_path);
+            let mut guard = status_map.lock().unwrap_or_else(|e| e.into_inner());
+            guard.insert(key_for_thread.clone(), result_status);
+            let _ = app_handle.emit("job:log", JobLogEvent {
+                id: "ffmpeg-download".to_string(),
+                line: "FFmpeg download failed.".to_string(),
+            });
+            return;
+        }
+
+        let is_zip = url.to_lowercase().ends_with(".zip");
+        if is_zip {
+            if let Err(err) = extract_ffmpeg_zip(&tmp_path, &ffmpeg_dir) {
+                result_status.state = "error".to_string();
+                result_status.message = Some(err);
+                let _ = fs::remove_file(&tmp_path);
+                let mut guard = status_map.lock().unwrap_or_else(|e| e.into_inner());
+                guard.insert(key_for_thread.clone(), result_status);
+                return;
+            }
+            let _ = fs::remove_file(&tmp_path);
+        } else {
+            let dest_path = ffmpeg_dir.join("bin/ffmpeg");
+            if let Err(err) = fs::rename(&tmp_path, &dest_path) {
+                result_status.state = "error".to_string();
+                result_status.message = Some(format!("Finalize error: {err}"));
+                let mut guard = status_map.lock().unwrap_or_else(|e| e.into_inner());
+                guard.insert(key_for_thread.clone(), result_status);
+                return;
+            }
+        }
+
+        let ffmpeg_path = ffmpeg_dir.join("bin/ffmpeg");
+        let ffprobe_path = ffmpeg_dir.join("bin/ffprobe");
+        if let Ok(mut perms) = fs::metadata(&ffmpeg_path).map(|meta| meta.permissions()) {
+            perms.set_mode(0o755);
+            let _ = fs::set_permissions(&ffmpeg_path, perms);
+        }
+        if ffprobe_path.exists() {
+            if let Ok(mut perms) = fs::metadata(&ffprobe_path).map(|meta| meta.permissions()) {
+                perms.set_mode(0o755);
+                let _ = fs::set_permissions(&ffprobe_path, perms);
+            }
+        }
+
+        if let Err(err) = ensure_lgpl_ffmpeg(ffmpeg_path.clone()) {
+            result_status.state = "error".to_string();
+            result_status.message = Some(err);
+            let mut guard = status_map.lock().unwrap_or_else(|e| e.into_inner());
+            guard.insert(key_for_thread.clone(), result_status);
+            return;
+        }
+
+        result_status.state = "done".to_string();
+        result_status.finished_at = Some(now_ts());
+        result_status.message = Some("Download complete".to_string());
+        let mut guard = status_map.lock().unwrap_or_else(|e| e.into_inner());
+        guard.insert(key_for_thread.clone(), result_status);
+    });
+
+    Ok(status)
+}
+
+#[tauri::command]
 pub fn start_whisper_download(
     app: AppHandle,
     state: State<ModelDownloadState>,
@@ -2043,7 +2258,7 @@ pub fn start_whisper_download(
 #[tauri::command]
 pub fn get_latest_whisper_release_url() -> Result<String, String> {
     let bizenlabs_latest =
-        "https://api.github.com/repos/bizenlabs/whisper-cpp-macos-bin/releases/latest";
+        "https://github.com/bizenlabs/whisper-cpp-macos-bin/releases/latest";
     let ggml_latest = "https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest";
     let ggml_backup = "https://api.github.com/repos/ggml-org/whisper.cpp/releases";
     let client = reqwest::blocking::Client::new();

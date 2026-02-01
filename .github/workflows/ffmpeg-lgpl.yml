@@ -1,0 +1,38 @@
+name: Build FFmpeg (LGPL) for macOS arm64
+
+on:
+  push:
+    tags:
+      - "ffmpeg-v*-lgpl"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          brew update
+          brew install nasm yasm pkg-config
+
+      - name: Build LGPL FFmpeg
+        run: |
+          VERSION="${GITHUB_REF_NAME#ffmpeg-v}"
+          VERSION="${VERSION%-lgpl}"
+          PACKAGE_ZIP=1 \
+          OUTPUT_ZIP="${PWD}/dist/ffmpeg-macos-arm64-lgpl.zip" \
+          FFMPEG_VERSION="${VERSION}" \
+          scripts/ffmpeg/build_macos_lgpl.sh
+          shasum -a 256 dist/ffmpeg-macos-arm64-lgpl.zip > dist/ffmpeg-macos-arm64-lgpl.zip.sha256
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ffmpeg-macos-arm64-lgpl.zip
+            dist/ffmpeg-macos-arm64-lgpl.zip.sha256

@@ -10,6 +10,9 @@ import {
   startWhisperDownload,
   getWhisperInstalled,
   getModelInstalled,
+  getFfmpegDownloadStatus,
+  getFfmpegInstalled,
+  startFfmpegDownload,
 } from "../api/client";
 import type { AppConfig, ModelDownloadStatus } from "../api/types";
 import Card from "../components/ui/Card";
@@ -46,6 +49,8 @@ const DEFAULT_SUMMARY_PROMPT = `Сделай Summary по расшифровке
 const PROMPT_STORAGE_KEY = "voicenote.summary_prompt";
 const DEFAULT_WHISPER_URL =
   "https://github.com/bizenlabs/whisper-cpp-macos-bin/releases/latest";
+const DEFAULT_FFMPEG_URL =
+  "https://github.com/ravaru/voicenoteapp/releases/latest/download/ffmpeg-macos-arm64-lgpl.zip";
 const getDefaultLanguage = (): "ru" | "en" => {
   const system = navigator.language?.toLowerCase() ?? "en";
   return system.startsWith("ru") ? "ru" : "en";
@@ -77,6 +82,9 @@ const Settings = forwardRef<SettingsHandle, Props>(function Settings(
   const [whisperError, setWhisperError] = useState<string | null>(null);
   const [whisperInstalled, setWhisperInstalled] = useState(false);
   const [modelInstalled, setModelInstalled] = useState(false);
+  const [ffmpegStatus, setFfmpegStatus] = useState<ModelDownloadStatus | null>(null);
+  const [ffmpegError, setFfmpegError] = useState<string | null>(null);
+  const [ffmpegInstalled, setFfmpegInstalled] = useState(false);
   const modelSizeRef = React.useRef<string | null>(null);
 
   useEffect(() => {
@@ -89,6 +97,7 @@ const Settings = forwardRef<SettingsHandle, Props>(function Settings(
         language: normalized,
         summary_prompt: data.summary_prompt || storedPrompt || DEFAULT_SUMMARY_PROMPT,
         whisper_binary_url: data.whisper_binary_url || DEFAULT_WHISPER_URL,
+        ffmpeg_binary_url: data.ffmpeg_binary_url || DEFAULT_FFMPEG_URL,
       };
       if (next.summary_prompt) {
         localStorage.setItem(PROMPT_STORAGE_KEY, next.summary_prompt);
@@ -119,6 +128,12 @@ const Settings = forwardRef<SettingsHandle, Props>(function Settings(
     getWhisperInstalled()
       .then(setWhisperInstalled)
       .catch(() => setWhisperInstalled(false));
+    getFfmpegDownloadStatus()
+      .then(setFfmpegStatus)
+      .catch(() => setFfmpegStatus(null));
+    getFfmpegInstalled()
+      .then(setFfmpegInstalled)
+      .catch(() => setFfmpegInstalled(false));
     getModelInstalled(cfg.model_size)
       .then(setModelInstalled)
       .catch(() => setModelInstalled(false));
@@ -151,6 +166,24 @@ const Settings = forwardRef<SettingsHandle, Props>(function Settings(
         .catch(() => setWhisperInstalled(false));
     }
   }, [whisperStatus?.state]);
+
+  useEffect(() => {
+    if (ffmpegStatus?.state !== "downloading") return;
+    const timer = setInterval(() => {
+      getFfmpegDownloadStatus()
+        .then(setFfmpegStatus)
+        .catch(() => {});
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [ffmpegStatus?.state]);
+
+  useEffect(() => {
+    if (ffmpegStatus?.state === "done") {
+      getFfmpegInstalled()
+        .then(setFfmpegInstalled)
+        .catch(() => setFfmpegInstalled(false));
+    }
+  }, [ffmpegStatus?.state]);
 
   useEffect(() => {
     if (downloadStatus?.state === "done" && cfg) {
@@ -269,6 +302,29 @@ const Settings = forwardRef<SettingsHandle, Props>(function Settings(
     }
   };
 
+  const startFfmpegBinaryDownload = async () => {
+    setFfmpegError(null);
+    if (!cfg?.ffmpeg_binary_url) {
+      setFfmpegError(t("settings.transcription.ffmpeg_download_error"));
+      return;
+    }
+    try {
+      const next = await startFfmpegDownload(cfg.ffmpeg_binary_url);
+      setFfmpegStatus(next);
+      getFfmpegInstalled()
+        .then(setFfmpegInstalled)
+        .catch(() => setFfmpegInstalled(false));
+    } catch (e) {
+      const message =
+        typeof e === "string"
+          ? e
+          : e instanceof Error
+          ? e.message
+          : JSON.stringify(e);
+      setFfmpegError(message || t("settings.transcription.ffmpeg_download_error"));
+    }
+  };
+
   const formatBytes = (bytes: number | null): string => {
     if (!bytes || bytes <= 0) return "—";
     const units = ["B", "KB", "MB", "GB", "TB"];
@@ -381,6 +437,72 @@ const Settings = forwardRef<SettingsHandle, Props>(function Settings(
         {activeTab === "transcription" && (
           <Card>
             <div className="section-title">{t("settings.tabs.transcription")}</div>
+            <div className="panel" style={{ marginTop: 12 }}>
+              <div
+                className="section-title"
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
+              >
+                <span>{t("settings.transcription.ffmpeg_download")}</span>
+                <span
+                  className="status-pill"
+                  style={{
+                    minWidth: 220,
+                    textAlign: "right",
+                    color: ffmpegInstalled ? "#4ade80" : "#f87171",
+                  }}
+                >
+                  {ffmpegInstalled
+                    ? t("settings.transcription.ffmpeg_installed")
+                    : t("settings.transcription.ffmpeg_missing")}
+                </span>
+              </div>
+              <div className="form-row">
+                <label style={{ width: "100%" }}>
+                  {t("settings.transcription.ffmpeg_url")}{" "}
+                  <span className="text-muted">
+                    ({t("settings.transcription.ffmpeg_url_help")})
+                  </span>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      className="input"
+                      value={cfg.ffmpeg_binary_url ?? ""}
+                      onChange={(e) => setCfg({ ...cfg, ffmpeg_binary_url: e.target.value })}
+                      placeholder="https://..."
+                      style={{ flex: 1 }}
+                    />
+                    <Button
+                      variant="secondary"
+                      onClick={startFfmpegBinaryDownload}
+                      disabled={ffmpegStatus?.state === "downloading"}
+                    >
+                      {t("settings.transcription.ffmpeg_download_button")}
+                    </Button>
+                  </div>
+                </label>
+                <div className="text-muted" style={{ marginTop: 6 }} />
+              </div>
+              {ffmpegStatus?.state === "downloading" && ffmpegStatus.total_bytes ? (
+                <div style={{ marginBottom: 8 }}>
+                  <ProgressBar
+                    value={Math.round(
+                      (ffmpegStatus.downloaded_bytes / ffmpegStatus.total_bytes) * 100
+                    )}
+                  />
+                  <div className="text-muted" style={{ marginTop: 6 }}>
+                    {formatBytes(ffmpegStatus.downloaded_bytes)} /{" "}
+                    {formatBytes(ffmpegStatus.total_bytes)}
+                  </div>
+                </div>
+              ) : null}
+              {ffmpegStatus?.state === "error" && (
+                <div className="text-muted">
+                  {t("settings.transcription.ffmpeg_download_error")}:{" "}
+                  {ffmpegStatus.message || "—"}
+                </div>
+              )}
+              {ffmpegError && <div className="text-muted">{ffmpegError}</div>}
+              <div className="text-muted" style={{ marginTop: 6 }} />
+            </div>
             <div className="panel" style={{ marginTop: 12 }}>
               <div
                 className="section-title"

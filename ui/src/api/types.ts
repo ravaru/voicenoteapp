@@ -69,4 +69,5 @@ export type AppConfig = {
   watch_inbox_enabled: boolean;
   inbox_poll_seconds: number;
   whisper_binary_url?: string;
+  ffmpeg_binary_url?: string;
 };
