@@ -1,0 +1,16 @@
+name: FFmpeg Compliance
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  compliance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Verify FFmpeg compliance
+        run: scripts/ffmpeg/verify_compliance.sh

@@ -1,0 +1,14 @@
+prefix=/Users/vr/Documents/Projects/voice-note/third_party/ffmpeg
+exec_prefix=${prefix}
+libdir=/Users/vr/Documents/Projects/voice-note/third_party/ffmpeg/lib
+includedir=/Users/vr/Documents/Projects/voice-note/third_party/ffmpeg/include
+
+Name: libavutil
+Description: FFmpeg utility library
+Version: 58.29.100
+Requires: 
+Requires.private: 
+Conflicts:
+Libs: -L${libdir}  -lavutil 
+Libs.private: -pthread -lm -framework CoreFoundation -framework CoreVideo -framework CoreMedia
+Cflags: -I${includedir}

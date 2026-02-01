@@ -1,0 +1,44 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/*.pyc
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/config.toml
+backend/plaud_stt_obsidian_backend.egg-info/
+.coverage
+coverage.xml
+htmlcov/
+pytest-report.html
+junit*.xml
+test-results/
+backend/test-results/
+backend/.tox/
+
+# Node
+ui/node_modules/
+ui/dist/
+ui/.vite/
+
+# Tauri
+ui/src-tauri/target/
+
+# Artifacts
+backend/out/
+backend/tmp/
+backend/inbox/
+backend/models/
+backend/model_cache/
+backend/.cache/
+backend/.huggingface/
+backend/.torch/
+backend/.whisper/
+models/
+.cache/
+.huggingface/
+.torch/
+torch_cache/
+hf_cache/
+
+# OS
+.DS_Store
