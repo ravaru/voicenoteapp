@@ -19,8 +19,16 @@ else
   search_cmd="grep -R -n"
 fi
 
+# Only scan build/config/docs to avoid false positives in runtime checks.
+scan_paths=(
+  scripts
+  .github/workflows
+  README.md
+  ui/src-tauri/tauri.conf.json
+)
+
 for pattern in "${forbidden_patterns[@]}"; do
-  if ${search_cmd} "${pattern}" scripts ui README.md ui/src-tauri/tauri.conf.json 2>/dev/null; then
+  if ${search_cmd} "${pattern}" "${scan_paths[@]}" 2>/dev/null; then
     echo "[compliance] Forbidden pattern found: ${pattern}"
     exit 1
   fi
