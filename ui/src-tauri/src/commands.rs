@@ -371,6 +371,18 @@ fn build_summary_prompt(template: &str, transcript: &str) -> String {
     }
 }
 
+fn sanitize_filename(input: &str) -> String {
+    input
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '\0' => '-',
+            _ => ch,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 fn write_summary_file(job_dir: &PathBuf, content: &str) -> Result<String, String> {
     let summary_path = job_dir.join("summary.md");
     fs::write(&summary_path, content)
@@ -1526,8 +1538,140 @@ pub fn delete_job(state: State<JobIndexState>, id: String) -> Result<bool, Strin
 }
 
 #[tauri::command]
-pub fn export_to_obsidian(_id: String) -> bool {
-    true
+pub fn export_to_obsidian(
+    app: AppHandle,
+    state: State<JobIndexState>,
+    config_state: State<ConfigState>,
+    id: String,
+) -> Result<bool, String> {
+    let (vault_path, output_subfolder, enable_summarization, summary_prompt) = {
+        let guard = config_state
+            .config
+            .lock()
+            .map_err(|_| "config mutex poisoned".to_string())?;
+        (
+            guard.vault_path.clone(),
+            guard.output_subfolder.clone(),
+            guard.enable_summarization,
+            guard.summary_prompt.clone(),
+        )
+    };
+    if vault_path.trim().is_empty() {
+        return Err("Obsidian vault path is not configured.".to_string());
+    }
+
+    let mut job_snapshot: Option<Job> = None;
+    {
+        let mut guard = state
+            .index
+            .lock()
+            .map_err(|_| "job index mutex poisoned".to_string())?;
+        if let Some(job) = guard.jobs.iter_mut().find(|job| job.id == id) {
+            job_snapshot = Some(job.clone());
+        }
+    }
+    let job = job_snapshot.ok_or_else(|| "job not found".to_string())?;
+    let job_dir = job_dir_from_audio_path(&job.audio_path)
+        .ok_or_else(|| "job directory not found".to_string())?;
+
+    let transcript_path = if !job.transcript_txt_path.is_empty() {
+        job.transcript_txt_path.clone()
+    } else {
+        job_dir
+            .join("transcript.txt")
+            .to_string_lossy()
+            .to_string()
+    };
+    let transcript = if std::path::Path::new(&transcript_path).exists() {
+        read_transcript_text(&transcript_path)?
+    } else {
+        String::new()
+    };
+
+    let summary_from_job = job.summary_md.clone().unwrap_or_default();
+    let summary_path = job_dir.join("summary.md");
+    let summary_from_disk = if summary_path.exists() {
+        fs::read_to_string(&summary_path)
+            .map_err(|err| format!("failed to read summary.md: {err}"))?
+    } else {
+        String::new()
+    };
+
+    let summary_status = job
+        .summary_status
+        .clone()
+        .unwrap_or_else(|| "not_started".to_string());
+    let manual_prompt = if summary_from_job.trim().is_empty() {
+        if summary_from_disk.trim().is_empty()
+            && (summary_status == "skipped" || !enable_summarization)
+        {
+            build_summary_prompt(&summary_prompt, &transcript)
+        } else {
+            summary_from_disk.clone()
+        }
+    } else {
+        summary_from_job.clone()
+    };
+
+    let mut note = String::new();
+    let title = sanitize_filename(
+        std::path::Path::new(&job.filename)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&job.id),
+    );
+    if !title.is_empty() {
+        note.push_str("# ");
+        note.push_str(&title);
+        note.push_str("\n\n");
+    }
+
+    if summary_status == "skipped" || !enable_summarization {
+        if !manual_prompt.trim().is_empty() {
+            note.push_str("## Summary prompt\n\n");
+            note.push_str(&manual_prompt);
+            note.push_str("\n\n");
+        }
+    } else if !manual_prompt.trim().is_empty() {
+        note.push_str(&manual_prompt);
+        if !manual_prompt.ends_with('\n') {
+            note.push('\n');
+        }
+        note.push('\n');
+    }
+
+    if !(summary_status == "skipped" || !enable_summarization) && !transcript.trim().is_empty() {
+        note.push_str("## Transcript\n\n");
+        note.push_str(&transcript);
+        if !note.ends_with('\n') {
+            note.push('\n');
+        }
+    }
+
+    let target_dir = if output_subfolder.trim().is_empty() {
+        PathBuf::from(vault_path)
+    } else {
+        PathBuf::from(vault_path).join(output_subfolder)
+    };
+    fs::create_dir_all(&target_dir)
+        .map_err(|err| format!("failed to create export dir: {err}"))?;
+    let target_path = target_dir.join(format!("{title}.md"));
+    fs::write(&target_path, note)
+        .map_err(|err| format!("failed to write note: {err}"))?;
+
+    let mut guard = state
+        .index
+        .lock()
+        .map_err(|_| "job index mutex poisoned".to_string())?;
+    if let Some(job) = guard.jobs.iter_mut().find(|job| job.id == id) {
+        job.exported_to_obsidian = true;
+        push_log(job, "Exported to Obsidian.");
+        save_index_to_disk(&state.path, &guard)?;
+        emit_job_updated(&app, job);
+        emit_job_log(&app, &job.id, "Exported to Obsidian.");
+    }
+
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1647,7 +1791,11 @@ pub fn get_clip_path(
 }
 
 #[tauri::command]
-pub fn get_summary(state: State<JobIndexState>, id: String) -> Result<SummaryResponse, String> {
+pub fn get_summary(
+    state: State<JobIndexState>,
+    config_state: State<ConfigState>,
+    id: String,
+) -> Result<SummaryResponse, String> {
     let guard = state
         .index
         .lock()
@@ -1658,12 +1806,23 @@ pub fn get_summary(state: State<JobIndexState>, id: String) -> Result<SummaryRes
         .find(|job| job.id == id)
         .cloned()
         .ok_or_else(|| "job not found".to_string())?;
+    let summary_status = job
+        .summary_status
+        .clone()
+        .unwrap_or_else(|| "not_started".to_string());
+    let default_model = {
+        let guard = config_state
+            .config
+            .lock()
+            .map_err(|_| "config mutex poisoned".to_string())?;
+        guard.ollama_model.clone()
+    };
 
     if let Some(summary) = job.summary_md.clone() {
         if !summary.trim().is_empty() {
             return Ok(SummaryResponse {
-                summary_status: job.summary_status.unwrap_or_else(|| "done".to_string()),
-                summary_model: job.summary_model.unwrap_or_else(|| "".to_string()),
+                summary_status: summary_status.clone(),
+                summary_model: job.summary_model.unwrap_or_else(|| default_model.clone()),
                 summary_error: job.summary_error,
                 summary_md: summary,
             });
@@ -1677,16 +1836,44 @@ pub fn get_summary(state: State<JobIndexState>, id: String) -> Result<SummaryRes
         let content = fs::read_to_string(&summary_path)
             .map_err(|err| format!("failed to read summary.md: {err}"))?;
         return Ok(SummaryResponse {
-            summary_status: job.summary_status.unwrap_or_else(|| "done".to_string()),
-            summary_model: job.summary_model.unwrap_or_else(|| "".to_string()),
+            summary_status: summary_status.clone(),
+            summary_model: job.summary_model.unwrap_or_else(|| default_model.clone()),
             summary_error: job.summary_error,
             summary_md: content,
         });
     }
 
+    if summary_status == "skipped" {
+        let prompt_template = {
+            let guard = config_state
+                .config
+                .lock()
+                .map_err(|_| "config mutex poisoned".to_string())?;
+            guard.summary_prompt.clone()
+        };
+        let transcript = if !job.transcript_txt_path.is_empty()
+            && std::path::Path::new(&job.transcript_txt_path).exists()
+        {
+            read_transcript_text(&job.transcript_txt_path)?
+        } else {
+            String::new()
+        };
+        let prompt = if transcript.is_empty() {
+            prompt_template
+        } else {
+            build_summary_prompt(&prompt_template, &transcript)
+        };
+        return Ok(SummaryResponse {
+            summary_status: summary_status.clone(),
+            summary_model: job.summary_model.unwrap_or_else(|| default_model.clone()),
+            summary_error: job.summary_error,
+            summary_md: prompt,
+        });
+    }
+
     Ok(SummaryResponse {
-        summary_status: job.summary_status.unwrap_or_else(|| "not_started".to_string()),
-        summary_model: job.summary_model.unwrap_or_else(|| "".to_string()),
+        summary_status: summary_status.clone(),
+        summary_model: job.summary_model.unwrap_or_else(|| default_model.clone()),
         summary_error: job.summary_error,
         summary_md: "".to_string(),
     })

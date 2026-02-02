@@ -14,6 +14,7 @@ export default function SummaryPanel({ jobId }: Props) {
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const load = async () => {
     try {
@@ -65,6 +66,18 @@ export default function SummaryPanel({ jobId }: Props) {
   };
 
   const statusKey = summary?.summary_status ?? "not_started";
+  const isManualPrompt = summary?.summary_status === "skipped";
+  const promptText = summary?.summary_md ?? "";
+  const copyPrompt = async () => {
+    if (!promptText.trim()) return;
+    try {
+      await navigator.clipboard.writeText(promptText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
 
   return (
     <div className="panel summary-panel details-scroll-panel">
@@ -72,7 +85,24 @@ export default function SummaryPanel({ jobId }: Props) {
         {summary?.summary_model && <span className="table-muted">{summary.summary_model}</span>}
       </div>
 
-      {summary?.summary_md ? (
+      {isManualPrompt ? (
+        <div className="summary-manual">
+          <div className="text-muted" style={{ marginBottom: 8 }}>
+            {t("summary.manual_prompt_title")}
+          </div>
+          <textarea className="textarea" rows={12} readOnly value={promptText} />
+          <div style={{ marginTop: 12 }}>
+            <Button variant="secondary" onClick={copyPrompt} disabled={!promptText.trim()}>
+              {t("summary.copy_prompt")}
+            </Button>
+            {copied && (
+              <span className="table-muted" style={{ marginLeft: 8 }}>
+                {t("summary.copied")}
+              </span>
+            )}
+          </div>
+        </div>
+      ) : summary?.summary_md ? (
         <MarkdownPreview markdown={summary.summary_md} />
       ) : (
         <div className="text-muted summary-empty">{t("summary.empty")}</div>
@@ -88,7 +118,7 @@ export default function SummaryPanel({ jobId }: Props) {
           {error}
         </div>
       )}
-      {statusKey !== "not_started" && (
+      {!isManualPrompt && statusKey !== "not_started" && (
         <div style={{ marginTop: 12 }}>
           <Button variant="secondary" onClick={regenerate}>
             {t("summary.regenerate")}
