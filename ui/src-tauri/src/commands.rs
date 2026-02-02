@@ -848,11 +848,27 @@ fn extract_ffmpeg_zip(zip_path: &PathBuf, dest_dir: &PathBuf) -> Result<(), Stri
         .map_err(|err| format!("Invalid zip: {err}"))?;
     let mut found_ffmpeg = false;
     let mut found_ffprobe = false;
+    let mut found_dylib = false;
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
             .map_err(|err| format!("Zip entry error: {err}"))?;
         let name = entry.name().to_string();
+        if name.ends_with(".dylib") {
+            let file_name = PathBuf::from(&name)
+                .file_name()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| name.clone());
+            let out_path = dest_dir.join("lib").join(file_name);
+            fs::create_dir_all(out_path.parent().unwrap())
+                .map_err(|err| format!("Failed to create ffmpeg lib dir: {err}"))?;
+            let mut out = File::create(&out_path)
+                .map_err(|err| format!("Failed to create dylib: {err}"))?;
+            std::io::copy(&mut entry, &mut out)
+                .map_err(|err| format!("Failed to extract dylib: {err}"))?;
+            found_dylib = true;
+            continue;
+        }
         if name.ends_with("/ffmpeg") || name == "ffmpeg" {
             let out_path = dest_dir.join("bin/ffmpeg");
             fs::create_dir_all(out_path.parent().unwrap())
@@ -880,11 +896,26 @@ fn extract_ffmpeg_zip(zip_path: &PathBuf, dest_dir: &PathBuf) -> Result<(), Stri
     if !found_ffprobe {
         return Err("ffprobe binary not found in zip.".to_string());
     }
+    if !found_dylib {
+        return Err("FFmpeg dylibs not found in zip.".to_string());
+    }
     Ok(())
 }
 
+fn apply_ffmpeg_env(cmd: &mut Command, ffmpeg_path: &PathBuf) {
+    if let Some(root) = ffmpeg_path.parent().and_then(|p| p.parent()) {
+        let lib_dir = root.join("lib");
+        if lib_dir.exists() {
+            cmd.env("DYLD_LIBRARY_PATH", &lib_dir);
+            cmd.env("DYLD_FALLBACK_LIBRARY_PATH", &lib_dir);
+        }
+    }
+}
+
 fn convert_to_wav(ffmpeg_path: &PathBuf, input: &str, output: &PathBuf) -> Result<(), String> {
-    let status = Command::new(ffmpeg_path)
+    let mut cmd = Command::new(ffmpeg_path);
+    apply_ffmpeg_env(&mut cmd, ffmpeg_path);
+    let status = cmd
         .args([
             "-y",
             "-i",
@@ -994,7 +1025,9 @@ fn ensure_clip(
         return Ok(clip_path.to_string_lossy().to_string());
     }
 
-    let status = Command::new(ffmpeg_path)
+    let mut cmd = Command::new(ffmpeg_path);
+    apply_ffmpeg_env(&mut cmd, ffmpeg_path);
+    let status = cmd
         .args([
             "-y",
             "-i",
@@ -1071,7 +1104,9 @@ fn resolve_ffmpeg_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn ensure_lgpl_ffmpeg(path: PathBuf) -> Result<PathBuf, String> {
-    let output = Command::new(&path)
+    let mut cmd = Command::new(&path);
+    apply_ffmpeg_env(&mut cmd, &path);
+    let output = cmd
         .arg("-version")
         .output()
         .map_err(|err| format!("Failed to run ffmpeg: {err}"))?;
